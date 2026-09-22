@@ -116,6 +116,7 @@
       topic: state.topic.id, idx: q.idx,
       queue: q.queue.map(s => keyOf(state.topic, s)),
       results: q.results.map(r => ({ key: keyOf(state.topic, r.item), right: r.right, mode: r.mode })),
+      revealed: q.revealed, checked: q.checked, firstTryRight: q.firstTryRight, feedback: q.feedback, typed: q.typed,
     });
   }
   function savedQuiz() {
@@ -124,12 +125,15 @@
     const byKey = Object.fromEntries(state.topic.sentences.map(s => [keyOf(state.topic, s), s]));
     const queue = r.queue.map(k => byKey[k]).filter(Boolean);
     if (queue.length !== r.queue.length || r.idx >= queue.length) return null;
-    return { queue, idx: r.idx, results: r.results.map(x => ({ item: byKey[x.key], right: x.right, mode: x.mode })).filter(x => x.item) };
+    return {
+      queue, idx: r.idx, results: r.results.map(x => ({ item: byKey[x.key], right: x.right, mode: x.mode })).filter(x => x.item),
+      revealed: !!r.revealed, checked: !!r.checked, firstTryRight: !!r.firstTryRight, feedback: r.feedback || null, typed: r.typed || '',
+    };
   }
   function resumeQuiz() {
     const saved = savedQuiz();
     if (!saved) return;
-    state.quiz = { ...saved, revealed: false, checked: false, firstTryRight: false, feedback: null, typed: '' };
+    state.quiz = saved;
     setView('quiz');
     scrollToQuiz();
   }
@@ -790,6 +794,7 @@
     q.feedback = answers.map(stripMarks).includes(stripMarks(guessNoSie))
       ? { kind: 'bad', text: `Nearly. The letters are right, but check the ${APP.languageName} marks such as ${APP.marks}.` }
       : { kind: 'bad', text: 'Not quite. Try again, or reveal the answer.' };
+    saveQuiz();
     renderQuiz();
   }
 
@@ -800,7 +805,8 @@
     if (!q.feedback || q.feedback.kind !== 'good') q.feedback = null;
     q.revealed = true;
     // typed answers are scored now; notebook answers wait for the learner's own verdict
-    if (!isNotebook()) { q.results.push({ item: current(), right: q.firstTryRight, mode: 'type' }); record(current(), q.firstTryRight); saveQuiz(); }
+    if (!isNotebook()) { q.results.push({ item: current(), right: q.firstTryRight, mode: 'type' }); record(current(), q.firstTryRight); }
+    saveQuiz();
     renderQuiz();
   }
 
@@ -875,11 +881,20 @@
   }
 
   /* ---------- view switching ---------- */
-  function setView(view) {
+  // Each view is a history entry (#quiz, #forms), so the browser's Back button returns from the tables to the quiz.
+  const HASH_VIEW = { '#quiz': 'quiz', '#forms': 'table' };
+  const viewHash = view => view === 'quiz' ? '#quiz' : '#forms';
+  function setView(view, push = true) {
+    if (push && view !== state.view) history.pushState({ view }, '', viewHash(view));
     state.view = view;
     store.set(`${APP.storagePrefix}.view`, view);
     renderView();
   }
+  window.addEventListener('popstate', e => {
+    const view = (e.state && e.state.view) || HASH_VIEW[location.hash] || state.view;
+    setView(view, false);
+    if (view === 'quiz' && state.quiz) scrollToQuiz();
+  });
 
   function renderView() {
     document.querySelectorAll('.view-btn').forEach(b => {
@@ -1022,6 +1037,10 @@
   });
   $('#all-groups').addEventListener('click', () => { state.selected[state.topic.id] = new Set(state.topic.allIds); afterFilterChange(); });
 
+  if (HASH_VIEW[location.hash]) state.view = HASH_VIEW[location.hash];
+  // an unfinished quiz survives a reload: carry on from the same sentence instead of showing the start screen
+  if (state.view === 'quiz') state.quiz = savedQuiz();
+  history.replaceState({ view: state.view }, '', viewHash(state.view));
   renderTopics();
   renderFilter();
   renderView();
